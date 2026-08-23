@@ -1,0 +1,238 @@
+@import "tailwindcss";
+
+/* ============================================================
+   FIRST CLICK AGENCY™ — HIGH-END DESIGN SYSTEM & MOTION
+   Paper & Ink Minimalist Architecture • OLED Precision
+   Inspired by Linear, Apple & Editorial Masterclass
+============================================================ */
+
+@theme {
+  --color-paper: #fafaf8;
+  --color-paper-soft: #f4f4f1;
+  --color-paper-elevated: #ffffff;
+  --color-ink: #0a0a0a;
+  --color-ink-soft: #4a4d52;
+  --color-ink-faint: #888b91;
+  --color-line: #e4e4e0;
+  --color-line-soft: #eeeee9;
+
+  --color-oled: #050607;
+  --color-oled-card: #0c0e11;
+  --color-oled-surface: #13161a;
+  --color-oled-border: #1f2329;
+  --color-oled-border-light: #2c323b;
+
+  --color-accent-emerald: #10b981;
+  --color-accent-emerald-glow: rgba(16, 185, 129, 0.35);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SFMono-Regular", monospace;
+  --font-serif: var(--font-geist-sans), ui-serif, Georgia, serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+/* ---------------- Focus & Selection ---------------- */
+::selection {
+  background-color: #0a0a0a;
+  color: #fafaf8;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
+/* ---------------- Custom Minimal Scrollbar ---------------- */
+::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--color-paper-soft);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c8c8c2;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a4a49c;
+}
+
+/* ---------------- Double-Bezel Hardware Architecture ---------------- */
+.double-bezel-paper {
+  background: #ffffff;
+  border: 1px solid var(--color-line);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02), 0 12px 32px rgba(0, 0, 0, 0.03), inset 0 1px 0 rgba(255, 255, 255, 0.9);
+}
+
+.double-bezel-oled {
+  background: var(--color-oled-card);
+  border: 1px solid var(--color-oled-border);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4), inset 0 1px 1px rgba(255, 255, 255, 0.08);
+}
+
+.double-bezel-oled:hover {
+  border-color: var(--color-oled-border-light);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), inset 0 1px 1px rgba(255, 255, 255, 0.12);
+}
+
+/* ---------------- Animation & Motion ---------------- */
+@keyframes chartGlowPulse {
+  0%, 100% {
+    filter: drop-shadow(0 0 8px rgba(16, 185, 129, 0.45));
+  }
+  50% {
+    filter: drop-shadow(0 0 18px rgba(16, 185, 129, 0.9));
+  }
+}
+
+@keyframes dashFlow {
+  from {
+    stroke-dashoffset: 240;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes radarPulse {
+  0% {
+    transform: scale(0.95);
+    opacity: 0.8;
+  }
+  50% {
+    transform: scale(1.6);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(0.95);
+    opacity: 0;
+  }
+}
+
+.chart-line-glow {
+  animation: chartGlowPulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.chart-dash-flow {
+  stroke-dasharray: 8 6;
+  animation: dashFlow 16s linear infinite;
+}
+
+.radar-ping {
+  animation: radarPulse 2.4s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+@keyframes floatSlow {
+  0%, 100% {
+    transform: translateY(0px) rotate(0deg);
+  }
+  50% {
+    transform: translateY(-10px) rotate(0.5deg);
+  }
+}
+
+@keyframes floatBadge1 {
+  0%, 100% {
+    transform: translateY(0px) scale(1);
+  }
+  50% {
+    transform: translateY(-8px) scale(1.02);
+  }
+}
+
+@keyframes floatBadge2 {
+  0%, 100% {
+    transform: translateY(0px) scale(1);
+  }
+  50% {
+    transform: translateY(6px) scale(0.98);
+  }
+}
+
+@keyframes greenLineDraw {
+  0% {
+    stroke-dashoffset: 600;
+  }
+  50% {
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes card3DPitchFloat {
+  0%, 100% {
+    transform: rotateX(14deg) rotateY(-16deg) rotateZ(2.5deg) translateY(0px);
+  }
+  50% {
+    transform: rotateX(5deg) rotateY(-10deg) rotateZ(1deg) translateY(-14px);
+  }
+}
+
+.animate-card-3d-pitch {
+  animation: card3DPitchFloat 7s ease-in-out infinite;
+}
+
+.animate-float-slow {
+  animation: floatSlow 6s ease-in-out infinite;
+}
+
+.animate-float-badge-1 {
+  animation: floatBadge1 4.5s ease-in-out infinite;
+}
+
+.animate-float-badge-2 {
+  animation: floatBadge2 5.2s ease-in-out infinite 0.8s;
+}
+
+.animate-green-line {
+  stroke-dasharray: 600;
+  animation: greenLineDraw 4s cubic-bezier(0.16, 1, 0.3, 1) infinite alternate;
+}
+
+/* Custom Cubic Bezier Transition Classes */
+.ease-spring {
+  transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.ease-haptic {
+  transition-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* ---------------- Accessibility & Reduced Motion ---------------- */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
