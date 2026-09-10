@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Card Reveal — Shader Study</title>
+<style>
+  html,body{margin:0;padding:0;height:100%;background:#efe3f7;overflow:hidden;}
+  #app{position:relative;width:100%;height:100vh;}
+  canvas#gl{display:block;width:100%;height:100%;}
+  #vignette{position:absolute;inset:0;pointer-events:none;
+    background:radial-gradient(ellipse at 50% 45%, rgba(20,0,40,0) 45%, rgba(25,0,45,0.28) 100%);}
+  #label{position:absolute;top:20px;left:22px;color:rgba(40,10,50,0.55);
+    font:600 12px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    letter-spacing:.03em;z-index:5;text-transform:uppercase;}
+  #chrome{position:absolute;left:0;right:0;bottom:0;display:flex;align-items:center;gap:14px;
+    padding:18px 22px;z-index:5;}
+  #playBtn{width:42px;height:42px;border-radius:50%;background:rgba(30,10,40,0.5);
+    backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);border:none;display:flex;
+    align-items:center;justify-content:center;cursor:pointer;flex:none;padding:0;}
+  #playBtn svg{width:15px;height:15px;fill:#fff;}
+  #track{flex:1;height:4px;border-radius:2px;background:rgba(60,20,70,0.25);position:relative;overflow:hidden;}
+  #fill{position:absolute;left:0;top:0;bottom:0;width:0%;background:linear-gradient(90deg,#ff4f8b,#b24cff);}
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="gl"></canvas>
+  <div id="vignette"></div>
+  <div id="label">Card reveal · shader study</div>
+  <div id="chrome">
+    <button id="playBtn" aria-label="Play/Pause"></button>
+    <div id="track"><div id="fill"></div></div>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function(){
+
+// ---------------------------------------------------------------
+// BASIC SETUP
+// ---------------------------------------------------------------
+var canvas = document.getElementById('gl');
+var renderer = new THREE.WebGLRenderer({canvas:canvas, antialias:true});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1, 2));
+renderer.setClearColor(0xefe3f7, 1);
+
+var scene = new THREE.Scene();
+var camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
+
+function resize(){
+  var w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w,h);
+  camera.aspect = w/h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+
+// ---------------------------------------------------------------
+// SHADER LIBRARY
+// ---------------------------------------------------------------
+var LIGHT_DIR = new THREE.Vector3(0.45, 0.85, 0.6).normalize();
+var SWEEP_DIR = new THREE.Vector2(0.72, -0.7).normalize();
+
+var COMMON_GLSL =
+'float edgeFactor(vec2 uv, float w){' +
+'  float d = min(min(uv.x,1.0-uv.x), min(uv.y,1.0-uv.y));' +
+'  return 1.0 - smoothstep(0.0, w, d);' +
+'}' +
+'float sweepBand(vec3 worldPos, vec2 dir, float pos, float width){' +
+'  float d = dot(worldPos.xy, dir) - pos;' +
+'  return smoothstep(width, 0.0, abs(d));' +
+'}';
+
+var VERT_SHARED =
+'varying vec2 vUv;' +
+'varying vec3 vNormalW;' +
+'varying vec3 vViewDir;' +
+'varying vec3 vWorldPos;' +
+'varying float vFrontMask;' +
+'void main(){' +
+'  vUv = uv;' +
+'  vFrontMask = step(0.85, normal.z);' +
+'  vec4 worldPos = modelMatrix * vec4(position,1.0);' +
+'  vWorldPos = worldPos.xyz;' +
+'  vNormalW = normalize(mat3(modelMatrix) * normal);' +
+'  vec4 mvPos = modelViewMatrix * vec4(position,1.0);' +
+'  vViewDir = -mvPos.xyz;' +
+'  gl_Position = projectionMatrix * mvPos;' +
+'}';
+
+var TILE_FRAG = COMMON_GLSL +
+'uniform vec3 colorA; uniform vec3 colorB; uniform vec3 lightDir;' +
+'uniform vec2 sweepDir; uniform float sweepPos;' +
+'varying vec2 vUv; varying vec3 vNormalW; varying vec3 vViewDir; varying vec3 vWorldPos;' +
+'void main(){' +
+'  vec3 N = normalize(vNormalW);' +
+'  vec3 V = normalize(vViewDir);' +
+'  float ndl = max(dot(N, lightDir), 0.08);' +
+'  float t = clamp((vWorldPos.y + 6.0) / 12.0, 0.0, 1.0);' +
+'  vec3 base = mix(colorB, colorA, t);' +
+'  vec3 col = base * (0.55 + 0.55 * ndl);' +
+'  float fres = pow(1.0 - max(dot(N,V),0.0), 2.0);' +
+'  col += fres * 0.08;' +
+'  col += edgeFactor(vUv, 0.09) * 0.10;' +
+'  col -= (1.0-edgeFactor(vUv,0.02)) * 0.0;' +
+'  col += sweepBand(vWorldPos, sweepDir, sweepPos, 1.7) * vec3(1.0,0.97,1.0) * 0.5;' +
+'  gl_FragColor = vec4(col, 1.0);' +
+'}';
+
+var CARD_FRAG = COMMON_GLSL +
+'uniform float uTime; uniform float uPop;' +
+'uniform vec3 colorTop; uniform vec3 colorBottom; uniform vec3 lightDir;' +
+'uniform vec2 sweepDir; uniform float sweepPos;' +
+'uniform sampler2D uText;' +
+'varying vec2 vUv; varying vec3 vNormalW; varying vec3 vViewDir; varying vec3 vWorldPos; varying float vFrontMask;' +
+'void main(){' +
+'  vec3 N = normalize(vNormalW);' +
+'  vec3 V = normalize(vViewDir);' +
+'  float ndl = max(dot(N, lightDir), 0.12);' +
+'  vec3 base = mix(colorBottom, colorTop, vUv.y);' +
+'  vec3 col = base * (0.62 + 0.5 * ndl);' +
+'  float fres = pow(1.0 - max(dot(N,V),0.0), 2.4);' +
+'  col += fres * vec3(0.55,0.62,1.0) * (0.3 + 0.45*uPop);' +
+'  float diag = vUv.x + vUv.y;' +
+'  float phase = fract(uTime * 0.14);' +
+'  float center = phase * 2.6 - 0.3;' +
+'  float shine = smoothstep(0.20, 0.0, abs(diag - center));' +
+'  col += shine * 0.4 * (0.5 + 0.5*uPop);' +
+'  float spec = pow(max(dot(reflect(-lightDir,N), V), 0.0), 60.0);' +
+'  col += spec * 0.6;' +
+'  col += edgeFactor(vUv, 0.06) * 0.22;' +
+'  col += sweepBand(vWorldPos, sweepDir, sweepPos, 1.4) * 0.55;' +
+'  vec4 tex = texture2D(uText, vUv);' +
+'  col = mix(col, vec3(1.0), tex.a * vFrontMask);' +
+'  gl_FragColor = vec4(col, 1.0);' +
+'}';
+
+var GLOSS_FRAG = COMMON_GLSL +
+'uniform vec3 lightDir; uniform vec3 baseColor;' +
+'uniform vec2 sweepDir; uniform float sweepPos;' +
+'varying vec3 vNormalW; varying vec3 vViewDir; varying vec3 vWorldPos;' +
+'void main(){' +
+'  vec3 N = normalize(vNormalW);' +
+'  vec3 V = normalize(vViewDir);' +
+'  float ndl = max(dot(N, lightDir), 0.1);' +
+'  float top = smoothstep(-0.3, 1.0, N.y);' +
+'  vec3 base = mix(baseColor*0.8, vec3(1.0), top);' +
+'  vec3 col = base * (0.55 + 0.55*ndl);' +
+'  float fres = pow(1.0 - max(dot(N,V),0.0), 2.1);' +
+'  col += fres * 0.55;' +
+'  float spec = pow(max(dot(reflect(-lightDir,N), V), 0.0), 45.0);' +
+'  col += spec * 0.85;' +
+'  col += sweepBand(vWorldPos, sweepDir, sweepPos, 1.3) * 0.4;' +
+'  gl_FragColor = vec4(col, 1.0);' +
+'}';
+
+var GLASS_FRAG =
+'uniform vec3 lightDir;' +
+'varying vec3 vNormalW; varying vec3 vViewDir;' +
+'void main(){' +
+'  vec3 N = normalize(vNormalW);' +
+'  vec3 V = normalize(vViewDir);' +
+'  float fres = pow(1.0 - max(dot(N,V),0.0), 3.2);' +
+'  float spec = pow(max(dot(reflect(-lightDir,N), V), 0.0), 90.0);' +
+'  gl_FragColor = vec4(vec3(1.0), fres*0.3 + spec*0.5);' +
+'}';
+
+var sweepUniformTargets = []; // materials that need sweepPos/time updates
+function makeUniforms(extra){
+  var u = {
+    lightDir: {value: LIGHT_DIR},
+    sweepDir: {value: SWEEP_DIR},
+    sweepPos: {value: -6}
+  };
+  for (var k in extra) u[k] = extra[k];
+  return u;
+}
+
+function tileMaterial(colorA, colorB){
+  var m = new THREE.ShaderMaterial({
+    uniforms: makeUniforms({
+      colorA:{value:new THREE.Color(colorA)},
+      colorB:{value:new THREE.Color(colorB)}
+    }),
+    vertexShader: VERT_SHARED,
+    fragmentShader: TILE_FRAG
+  });
+  sweepUniformTargets.push(m);
+  return m;
+}
+function glossMaterial(color){
+  var m = new THREE.ShaderMaterial({
+    uniforms: makeUniforms({ baseColor:{value:new THREE.Color(color)} }),
+    vertexShader: VERT_SHARED,
+    fragmentShader: GLOSS_FRAG
+  });
+  sweepUniformTargets.push(m);
+  return m;
+}
+var glassMat = new THREE.ShaderMaterial({
+  uniforms: { lightDir:{value:LIGHT_DIR} },
+  vertexShader: VERT_SHARED,
+  fragmentShader: GLASS_FRAG,
+  transparent: true,
+  depthWrite: false
+});
+
+// ---------------------------------------------------------------
+// GEOMETRY HELPERS
+// ---------------------------------------------------------------
+function roundedRectShape(w,h,r){
+  var s = new THREE.Shape();
+  var x = -w/2, y = -h/2;
+  r = Math.min(r, w/2, h/2);
+  s.moveTo(x+r, y);
+  s.lineTo(x+w-r, y);
+  s.quadraticCurveTo(x+w, y, x+w, y+r);
+  s.lineTo(x+w, y+h-r);
+  s.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  s.lineTo(x+r, y+h);
+  s.quadraticCurveTo(x, y+h, x, y+h-r);
+  s.lineTo(x, y+r);
+  s.quadraticCurveTo(x, y, x+r, y);
+  return s;
+}
+function roundedBoxGeo(w,h,r,depth,bevel){
+  bevel = bevel===undefined ? Math.min(0.05,depth*0.3) : bevel;
+  var shape = roundedRectShape(w,h,r);
+  var geo = new THREE.ExtrudeGeometry(shape, {
+    depth: depth, bevelEnabled:true, bevelThickness:bevel, bevelSize:bevel,
+    bevelSegments:3, curveSegments:10
+  });
+  geo.center();
+  return geo;
+}
+
+// ---------------------------------------------------------------
+// WORLD
+// ---------------------------------------------------------------
+var world = new THREE.Group();
+scene.add(world);
+
+var tilesGroup = new THREE.Group();
+world.add(tilesGroup);
+
+var TILE_PALETTE = [
+  ['#efe6fb', '#d9b9ee'],
+  ['#eee2fa', '#c9b6f2'],
+  ['#f1e6f9', '#e1b9e6'],
+  ['#e9e2fb', '#b6a6ef']
+];
+var TILE_DEFS = [
+  [-4.6, 3.0, 5.0, 4.0, -1.0, 0.55],
+  [ 1.2, 3.5, 5.0, 3.3, -1.3, 0.42],
+  [-4.8,-2.4, 4.7, 4.1, -0.8, 0.6],
+  [ 0.9,-1.1, 4.9, 3.3, -1.15,0.46],
+  [ 5.7, 2.9, 3.1, 4.0, -1.2, 0.5],
+  [ 5.7,-2.1, 3.3, 4.6, -0.9, 0.55],
+  [-1.0,-4.2, 4.6, 2.6, -1.4, 0.4],
+  [ 3.3,-4.3, 3.7, 2.4, -1.05,0.48],
+  [-6.9, 0.3, 2.5, 5.6, -0.7, 0.6]
+];
+TILE_DEFS.forEach(function(def, i){
+  var pal = TILE_PALETTE[i % TILE_PALETTE.length];
+  var geo = roundedBoxGeo(def[2], def[3], 0.22, def[5]);
+  var mat = tileMaterial(pal[0], pal[1]);
+  var mesh = new THREE.Mesh(geo, mat);
+  mesh.position.set(def[0], def[1], def[4]);
+  tilesGroup.add(mesh);
+});
+
+// ---------------------------------------------------------------
+// PHONE
+// ---------------------------------------------------------------
+var phoneGroup = new THREE.Group();
+phoneGroup.position.set(0.4, 0.0, 0);
+phoneGroup.rotation.z = THREE.MathUtils.degToRad(-19);
+world.add(phoneGroup);
+
+var PHONE_W = 2.05, PHONE_H = 4.35, PHONE_DEPTH = 0.42;
+var bodyGeo = roundedBoxGeo(PHONE_W, PHONE_H, 0.42, PHONE_DEPTH, 0.06);
+var bodyMat = glossMaterial('#e9e4fb');
+var bodyMesh = new THREE.Mesh(bodyGeo, bodyMat);
+phoneGroup.add(bodyMesh);
+
+var INNER_W = PHONE_W * 0.90, INNER_H = PHONE_H * 0.93;
+var CANVAS_W = 640, CANVAS_H = 1360;
+var uiCanvas = document.createElement('canvas');
+uiCanvas.width = CANVAS_W; uiCanvas.height = CANVAS_H;
+var uiCtx = uiCanvas.getContext('2d');
+var uiTexture = new THREE.CanvasTexture(uiCanvas);
+uiTexture.minFilter = THREE.LinearFilter;
+
+var screenMesh = new THREE.Mesh(
+  new THREE.PlaneGeometry(INNER_W, INNER_H),
+  new THREE.MeshBasicMaterial({map: uiTexture})
+);
+screenMesh.position.z = PHONE_DEPTH/2 + 0.02;
+phoneGroup.add(screenMesh);
+
+var glassMesh = new THREE.Mesh(new THREE.PlaneGeometry(INNER_W, INNER_H), glassMat);
+glassMesh.position.z = PHONE_DEPTH/2 + 0.03;
+phoneGroup.add(glassMesh);
+
+// Card slot geometry (matches blank area left in the canvas UI)
+var CARD_W = INNER_W * 0.90, CARD_H = INNER_H * 0.285;
+var CARD_Y = INNER_H*0.5 - INNER_H*0.135 - CARD_H/2; // near top, below header
+
+function makeCardTextTexture(){
+  var c = document.createElement('canvas');
+  c.width = 640; c.height = 360;
+  var ctx = c.getContext('2d');
+  ctx.clearRect(0,0,c.width,c.height);
+  ctx.fillStyle = '#ffffff';
+  ctx.font = 'italic 600 58px Georgia, "Times New Roman", serif';
+  ctx.textBaseline = 'top';
+  ctx.fillText('Revolut', 46, 46);
+  ctx.font = '700 26px -apple-system, Helvetica, Arial, sans-serif';
+  var fancyLabel = 'FANCY.DESIGN', fx = 46;
+  for (var fi=0; fi<fancyLabel.length; fi++){
+    ctx.fillText(fancyLabel[fi], fx, 288);
+    fx += ctx.measureText(fancyLabel[fi]).width + 2.5;
+  }
+  var tex = new THREE.CanvasTexture(c);
+  tex.minFilter = THREE.LinearFilter;
+  return tex;
+}
+var cardTextTexture = makeCardTextTexture();
+
+var cardGeo = roundedBoxGeo(CARD_W, CARD_H, 0.16, 0.10, 0.035);
+var cardMat = new THREE.ShaderMaterial({
+  uniforms: makeUniforms({
+    uTime:{value:0}, uPop:{value:0},
+    colorTop:{value:new THREE.Color('#3552e0')},
+    colorBottom:{value:new THREE.Color('#0d1f9e')},
+    uText:{value: cardTextTexture}
+  }),
+  vertexShader: VERT_SHARED,
+  fragmentShader: CARD_FRAG
+});
+sweepUniformTargets.push(cardMat);
+var cardMesh = new THREE.Mesh(cardGeo, cardMat);
+cardMesh.position.set(0, CARD_Y, PHONE_DEPTH/2 + 0.03);
+phoneGroup.add(cardMesh);
+
+var CARD_FLAT_Z = PHONE_DEPTH/2 + 0.03;
+var CARD_POP_Z = PHONE_DEPTH/2 + 1.35;
+
+// ---------------------------------------------------------------
+// PROPS: AirPods case, AirPods, Apple Pencil
+// ---------------------------------------------------------------
+var darkMat = new THREE.MeshBasicMaterial({color:0x2a2735});
+
+// -- AirPods case --
+var caseGroup = new THREE.Group();
+caseGroup.position.set(-3.5, 2.7, 0.15);
+caseGroup.rotation.z = THREE.MathUtils.degToRad(-12);
+world.add(caseGroup);
+var caseBodyGeo = roundedBoxGeo(1.55, 1.2, 0.34, 0.95, 0.14);
+var caseMesh = new THREE.Mesh(caseBodyGeo, glossMaterial('#f3f0fb'));
+caseGroup.add(caseMesh);
+var hingeGeo = new THREE.BoxGeometry(0.05, 0.55, 0.05);
+var hingeMesh = new THREE.Mesh(hingeGeo, darkMat);
+hingeMesh.position.set(-0.02, 0.15, 0.5);
+caseGroup.add(hingeMesh);
+var ledGeo = new THREE.CircleGeometry(0.035, 16);
+var ledMesh = new THREE.Mesh(ledGeo, new THREE.MeshBasicMaterial({color:0x35323f}));
+ledMesh.position.set(0, -0.3, 0.485);
+caseGroup.add(ledMesh);
+
+// -- AirPods earbuds --
+var budsGroup = new THREE.Group();
+budsGroup.position.set(3.75, -1.85, 0.2);
+budsGroup.rotation.z = THREE.MathUtils.degToRad(-22);
+world.add(budsGroup);
+
+function makeBud(){
+  var g = new THREE.Group();
+  var head = new THREE.Mesh(new THREE.SphereGeometry(0.26, 24, 20), glossMaterial('#f5f2fb'));
+  head.scale.set(1, 1.15, 0.85);
+  g.add(head);
+  var stem = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.065, 0.62, 16), glossMaterial('#f0edf9'));
+  stem.position.set(0, -0.44, 0.06);
+  stem.rotation.x = THREE.MathUtils.degToRad(-14);
+  g.add(stem);
+  var tip = new THREE.Mesh(new THREE.CylinderGeometry(0.085, 0.06, 0.12, 16), darkMat);
+  tip.position.set(0, -0.75, 0.09);
+  tip.rotation.x = THREE.MathUtils.degToRad(-14);
+  g.add(tip);
+  var mic = new THREE.Mesh(new THREE.SphereGeometry(0.03,10,10), darkMat);
+  mic.position.set(0.02,0.05,0.27);
+  g.add(mic);
+  return g;
+}
+var bud1 = makeBud();
+bud1.position.set(-0.32, 0.18, 0);
+bud1.rotation.z = THREE.MathUtils.degToRad(18);
+budsGroup.add(bud1);
+var bud2 = makeBud();
+bud2.position.set(0.38, -0.28, 0.05);
+bud2.rotation.z = THREE.MathUtils.degToRad(-34);
+bud2.rotation.y = THREE.MathUtils.degToRad(20);
+budsGroup.add(bud2);
+
+// -- Apple Pencil --
+var pencilGroup = new THREE.Group();
+pencilGroup.position.set(-5.15, -3.05, 0.12);
+pencilGroup.rotation.z = THREE.MathUtils.degToRad(72);
+world.add(pencilGroup);
+var pencilBody = new THREE.Mesh(new THREE.CylinderGeometry(0.135, 0.135, 3.1, 20), glossMaterial('#f4f1fa'));
+pencilGroup.add(pencilBody);
+var pencilBand = new THREE.Mesh(new THREE.CylinderGeometry(0.138, 0.138, 0.16, 20), darkMat);
+pencilBand.position.y = 0.55;
+pencilGroup.add(pencilBand);
+var pencilTip = new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.34, 20), glossMaterial('#d8d4e6'));
+pencilTip.position.y = -1.72;
+pencilGroup.add(pencilTip);
+var pencilNib = new THREE.Mesh(new THREE.ConeGeometry(0.03, 0.06, 12), darkMat);
+pencilNib.position.y = -1.92;
+pencilGroup.add(pencilNib);
+
+// ---------------------------------------------------------------
+// UI CANVAS DRAWING
+// ---------------------------------------------------------------
+function rr(ctx,x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y);
+  ctx.arcTo(x+w,y,x+w,y+h,r);
+  ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r);
+  ctx.arcTo(x,y,x+w,y,r);
+  ctx.closePath();
+}
+function circleIcon(ctx,cx,cy,r,fillStyle){
+  ctx.beginPath();
+  ctx.arc(cx,cy,r,0,Math.PI*2);
+  ctx.fillStyle = fillStyle;
+  ctx.fill();
+}
+var seededBars = [0.12,0.16,0.14,0.2,0.24,0.22,0.3,0.34,0.4,0.5,0.62,0.72,0.85,1.0];
+
+function drawUI(state){
+  var w = CANVAS_W, h = CANVAS_H;
+  uiCtx.clearRect(0,0,w,h);
+  rr(uiCtx,0,0,w,h,46);
+  uiCtx.fillStyle = '#ffffff';
+  uiCtx.fill();
+
+  // header
+  uiCtx.fillStyle = '#161522';
+  uiCtx.font = '600 34px -apple-system,Helvetica,Arial,sans-serif';
+  uiCtx.textAlign = 'left'; uiCtx.textBaseline = 'middle';
+  uiCtx.fillText('\u2190', 46, 96);
+  uiCtx.textAlign = 'center';
+  uiCtx.font = '700 32px -apple-system,Helvetica,Arial,sans-serif';
+  uiCtx.fillText('Cards', w/2, 96);
+  circleIcon(uiCtx, w-78, 96, 32, '#ee5fa8');
+  uiCtx.fillStyle = '#fff';
+  uiCtx.font = '600 30px -apple-system,Helvetica,Arial,sans-serif';
+  uiCtx.fillText('+', w-78, 94);
+
+  // (card region intentionally left blank — the 3D card mesh sits there)
+
+  // action row
+  uiCtx.textAlign = 'center';
+  var rowY = h*0.505;
+  var bx = [w*0.225, w*0.5, w*0.775];
+  var grad = uiCtx.createLinearGradient(bx[0]-40, rowY-40, bx[0]+40, rowY+40);
+  grad.addColorStop(0, '#a86bf0'); grad.addColorStop(1, '#ee5fa8');
+  circleIcon(uiCtx, bx[0], rowY, 42, grad);
+  uiCtx.fillStyle = 'rgba(255,255,255,0.9)';
+  uiCtx.beginPath(); uiCtx.arc(bx[0],rowY,10,0,Math.PI*2); uiCtx.fill();
+
+  if(state.protectedOn){
+    circleIcon(uiCtx, bx[1], rowY, 42, '#37c98a');
+    uiCtx.strokeStyle = '#fff'; uiCtx.lineWidth = 5; uiCtx.lineCap='round'; uiCtx.lineJoin='round';
+    uiCtx.beginPath();
+    uiCtx.moveTo(bx[1]-14, rowY); uiCtx.lineTo(bx[1]-3, rowY+11); uiCtx.lineTo(bx[1]+16, rowY-13);
+    uiCtx.stroke();
+  } else {
+    circleIcon(uiCtx, bx[1], rowY, 42, '#3aa0f2');
+    uiCtx.strokeStyle = '#fff'; uiCtx.lineWidth = 5; uiCtx.lineCap='round'; uiCtx.lineJoin='round';
+    uiCtx.beginPath();
+    uiCtx.moveTo(bx[1], rowY-14); uiCtx.lineTo(bx[1]-13, rowY-6); uiCtx.lineTo(bx[1]-13, rowY+8);
+    uiCtx.lineTo(bx[1], rowY+16); uiCtx.lineTo(bx[1]+13, rowY+8); uiCtx.lineTo(bx[1]+13, rowY-6);
+    uiCtx.closePath(); uiCtx.stroke();
+  }
+  circleIcon(uiCtx, bx[2], rowY, 42, '#d9d6e8');
+  circleIcon(uiCtx, bx[2], rowY, 9, '#8b87a3');
+
+  uiCtx.fillStyle = '#4a4757';
+  uiCtx.font = '500 22px -apple-system,Helvetica,Arial,sans-serif';
+  uiCtx.fillText('Show details', bx[0], rowY+74);
+  uiCtx.fillText(state.protectedOn ? 'Protected' : 'Protect Card', bx[1], rowY+74);
+  uiCtx.fillText('Settings', bx[2], rowY+74);
+
+  // revenue block
+  var revY = h*0.665;
+  uiCtx.textAlign = 'left';
+  rr(uiCtx, 46, revY-18, 34, 34, 9); uiCtx.fillStyle = '#37c98a'; uiCtx.fill();
+  uiCtx.fillStyle = '#fff'; uiCtx.font='700 20px -apple-system,Helvetica,Arial,sans-serif'; uiCtx.textAlign='center';
+  uiCtx.fillText('$', 63, revY+1);
+  uiCtx.textAlign = 'left';
+  uiCtx.fillStyle = '#7a7690';
+  uiCtx.font = '500 22px -apple-system,Helvetica,Arial,sans-serif';
+  uiCtx.fillText('Revenue', 96, revY);
+
+  uiCtx.fillStyle = '#151421';
+  uiCtx.font = '700 56px -apple-system,Helvetica,Arial,sans-serif';
+  uiCtx.fillText(Math.round(state.revenue).toLocaleString('en-US'), 46, revY+62);
+
+  // sparkline
+  var sbX = w*0.56, sbW = w*0.37, baseY = revY+68, maxBarH = 58;
+  for (var i=0;i<seededBars.length;i++){
+    var bh = seededBars[i]*maxBarH*(0.85+0.15*Math.sin(state.time*1.4+i));
+    var bx2 = sbX + i*(sbW/seededBars.length);
+    if(i < 5){
+      circleIcon(uiCtx, bx2, baseY-2, 2.6, 'rgba(55,201,138,0.55)');
+    } else {
+      uiCtx.fillStyle = '#37c98a';
+      rr(uiCtx, bx2-4, baseY-bh, 8, bh, 3);
+      uiCtx.fill();
+    }
+  }
+
+  uiCtx.strokeStyle = '#efedf6'; uiCtx.lineWidth = 2;
+  uiCtx.beginPath(); uiCtx.moveTo(46, h*0.755); uiCtx.lineTo(w-46, h*0.755); uiCtx.stroke();
+
+  // transactions header
+  var txY = h*0.80;
+  uiCtx.fillStyle = '#161522';
+  uiCtx.font = '700 26px -apple-system,Helvetica,Arial,sans-serif';
+  uiCtx.fillText('Recent transactions', 46, txY);
+  uiCtx.fillStyle = '#9d9ab1';
+  uiCtx.font = '500 20px -apple-system,Helvetica,Arial,sans-serif';
+  uiCtx.textAlign = 'right';
+  uiCtx.fillText('See all', w-46, txY);
+  uiCtx.textAlign = 'left';
+
+  var rows = [
+    {name:'HugeArts', amount:'$739.65', color:'#f0a1c9'},
+    {name:'Peter Filatov', amount:'$943.65', color:'#8fd6c9'}
+  ];
+  rows.forEach(function(row, i){
+    var ry = txY + 66 + i*118;
+    circleIcon(uiCtx, 68, ry, 32, row.color);
+    uiCtx.fillStyle = '#1c1a29';
+    uiCtx.font = '600 23px -apple-system,Helvetica,Arial,sans-serif';
+    uiCtx.fillText(row.name, 112, ry-8);
+    uiCtx.fillStyle = '#a29fb4';
+    uiCtx.font = '500 18px -apple-system,Helvetica,Arial,sans-serif';
+    uiCtx.fillText('Money receive', 112, ry+20);
+    uiCtx.textAlign = 'right';
+    uiCtx.fillStyle = '#1c1a29';
+    uiCtx.font = '600 23px -apple-system,Helvetica,Arial,sans-serif';
+    uiCtx.fillText(row.amount, w-46, ry-8);
+    uiCtx.fillStyle = '#37c98a';
+    uiCtx.font = '500 18px -apple-system,Helvetica,Arial,sans-serif';
+    uiCtx.fillText('Completed', w-46, ry+20);
+    uiCtx.textAlign = 'left';
+  });
+
+  uiTexture.needsUpdate = true;
+}
+
+// ---------------------------------------------------------------
+// PLAYBACK CHROME
+// ---------------------------------------------------------------
+var playBtn = document.getElementById('playBtn');
+var fillEl = document.getElementById('fill');
+var paused = false;
+var PAUSE_ICON = '<svg viewBox="0 0 24 24"><rect x="5" y="4" width="5" height="16" rx="1"></rect><rect x="14" y="4" width="5" height="16" rx="1"></rect></svg>';
+var PLAY_ICON = '<svg viewBox="0 0 24 24"><path d="M6 4l14 8-14 8z"></path></svg>';
+playBtn.innerHTML = PAUSE_ICON;
+playBtn.addEventListener('click', function(){
+  paused = !paused;
+  playBtn.innerHTML = paused ? PLAY_ICON : PAUSE_ICON;
+});
+
+// ---------------------------------------------------------------
+// ANIMATION LOOP
+// ---------------------------------------------------------------
+var clock = new THREE.Clock();
+var elapsed = 0;
+var CAM_LOOP = 9.0;
+var REV_LOOP = 3.2;
+var SWEEP_PERIOD = 3.6;
+
+var CAM_WIDE = new THREE.Vector3(0, 0.1, 13.2);
+var CAM_CLOSE = new THREE.Vector3(0.55, -0.55, 6.1);
+var LOOK_WIDE = new THREE.Vector3(0, 0, 0);
+var LOOK_CLOSE = new THREE.Vector3(0.35, 0.55, 0);
+
+function smooth(a,b,x){
+  x = THREE.MathUtils.clamp((x-a)/(b-a), 0, 1);
+  return x*x*(3-2*x);
+}
+function easeOutCubic(x){ return 1 - Math.pow(1-x, 3); }
+
+var camPos = new THREE.Vector3();
+var lookAt = new THREE.Vector3();
+
+function tick(){
+  requestAnimationFrame(tick);
+  var dt = clock.getDelta();
+  if(!paused) elapsed += dt;
+
+  // --- camera / pop phase ---
+  var T = elapsed % CAM_LOOP;
+  var mix, pop;
+  if (T < 3.0){ mix = 0; pop = 0; }
+  else if (T < 4.2){ var k = smooth(3.0,4.2,T); mix = k; pop = k; }
+  else if (T < 6.5){ mix = 1; pop = 1; }
+  else if (T < 7.7){ var k2 = 1 - smooth(6.5,7.7,T); mix = k2; pop = k2; }
+  else { mix = 0; pop = 0; }
+
+  camPos.lerpVectors(CAM_WIDE, CAM_CLOSE, mix);
+  camPos.x += Math.sin(elapsed*0.28)*0.12;
+  camPos.y += Math.cos(elapsed*0.23)*0.08;
+  camera.position.copy(camPos);
+  lookAt.lerpVectors(LOOK_WIDE, LOOK_CLOSE, mix);
+  camera.lookAt(lookAt);
+
+  cardMesh.position.z = THREE.MathUtils.lerp(CARD_FLAT_Z, CARD_POP_Z, pop);
+  var s = THREE.MathUtils.lerp(1.0, 1.08, pop);
+  cardMesh.scale.set(s, s, THREE.MathUtils.lerp(1.0, 2.6, pop));
+  cardMat.uniforms.uPop.value = pop;
+  cardMat.uniforms.uTime.value = elapsed;
+
+  // --- revenue counter ---
+  var rt = elapsed % REV_LOOP;
+  var revenue;
+  if (rt < 1.2){ revenue = THREE.MathUtils.lerp(18080, 42200, easeOutCubic(rt/1.2)); }
+  else { revenue = 42200; }
+
+  // --- sweep highlight ---
+  var sp = ((elapsed % SWEEP_PERIOD) / SWEEP_PERIOD) * 11 - 5.5;
+  for (var i=0;i<sweepUniformTargets.length;i++){
+    sweepUniformTargets[i].uniforms.sweepPos.value = sp;
+  }
+
+  drawUI({ revenue: revenue, protectedOn: pop > 0.5, time: elapsed });
+
+  fillEl.style.width = ((T/CAM_LOOP)*100).toFixed(1) + '%';
+
+  renderer.render(scene, camera);
+}
+
+resize();
+tick();
+
+})();
+</script>
+</body>
+</html>
